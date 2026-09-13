@@ -20,6 +20,9 @@ Keep responses concise (2-4 sentences), warm, and premium in tone. Never mention
 
 /**
  * General Agent — handles conversational messages, greetings, and fallbacks.
+ *
+ * @param state - Current agent state
+ * @returns Updated state with conversational response
  */
 export async function generalAgentNode(
   state: AgentState
@@ -41,10 +44,10 @@ export async function generalAgentNode(
       agentMode: "end",
     };
   } catch (error) {
-    console.error("[General] Error:", error);
+    console.error("[General Agent] Error:", error);
     return {
       agentResponse: {
-        text: "Welcome to LuminaShop! How can I help you today?",
+        text: "Welcome to LuminaShop! I encountered a minor issue. How can I help you today?",
         type: "message",
       },
       agentMode: "end",

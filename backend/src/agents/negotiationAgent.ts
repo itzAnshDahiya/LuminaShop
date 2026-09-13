@@ -26,47 +26,61 @@ const createAgentTool: any = tool;
  *
  * The LLM calls this tool. The server does the enforcement — the LLM cannot
  * bypass the margin floor regardless of what price it proposes.
+ *
+ * @param input - Tool input with product_id, proposed_price, customer_budget
+ * @returns JSON with pricing details and enforcement decision
  */
 const proposePriceTool = createAgentTool(
   async (input: any) => {
-    const { product_id, proposed_price, customer_budget } = input as {
-      product_id: string;
-      proposed_price: number;
-      customer_budget?: number;
-    };
-    // Fetch product from DB (try ID first, then fuzzy name search)
-    let product = (await dbFindProductById(product_id)) || (await dbFindProductByQuery(product_id));
+    try {
+      const { product_id, proposed_price, customer_budget } = input as {
+        product_id: string;
+        proposed_price: number;
+        customer_budget?: number;
+      };
 
-    if (!product) {
-      return JSON.stringify({ error: "Product not found", product_id });
+      // Fetch product from DB (try ID first, then fuzzy name search)
+      let product =
+        (await dbFindProductById(product_id)) ||
+        (await dbFindProductByQuery(product_id));
+
+      if (!product) {
+        return JSON.stringify({ error: "Product not found", product_id });
+      }
+
+      const baseCost = Number(product.base_cost);
+      const originalPrice = Number(product.price);
+      const minimumPrice = parseFloat((baseCost * 1.15).toFixed(2));
+
+      // ENFORCE: final price must be >= base_cost * 1.15
+      const finalPrice = Math.max(proposed_price, minimumPrice);
+      const discountPct = parseFloat(
+        (((originalPrice - finalPrice) / originalPrice) * 100).toFixed(1)
+      );
+      const accepted = proposed_price >= minimumPrice;
+
+      return JSON.stringify({
+        product_id: product.id,
+        product_name: product.name,
+        original_price: originalPrice,
+        base_cost: baseCost,
+        minimum_price: minimumPrice,
+        proposed_price,
+        final_price: finalPrice,
+        discount_percentage: discountPct,
+        accepted,
+        margin_maintained: true,
+        message: accepted
+          ? `Price approved at $${finalPrice.toFixed(2)} (${discountPct}% discount)`
+          : `Minimum price enforced at $${finalPrice.toFixed(2)} (${discountPct}% discount from $${originalPrice})`,
+      });
+    } catch (error) {
+      console.error("[ProposePriceTool] Error:", error);
+      return JSON.stringify({
+        error: "Price proposal failed",
+        details: String(error),
+      });
     }
-
-    const baseCost = Number(product.base_cost);
-    const originalPrice = Number(product.price);
-    const minimumPrice = parseFloat((baseCost * 1.15).toFixed(2));
-
-    // ENFORCE: final price must be >= base_cost * 1.15
-    const finalPrice = Math.max(proposed_price, minimumPrice);
-    const discountPct = parseFloat(
-      (((originalPrice - finalPrice) / originalPrice) * 100).toFixed(1)
-    );
-    const accepted = proposed_price >= minimumPrice;
-
-    return JSON.stringify({
-      product_id: product.id,
-      product_name: product.name,
-      original_price: originalPrice,
-      base_cost: baseCost,
-      minimum_price: minimumPrice,
-      proposed_price,
-      final_price: finalPrice,
-      discount_percentage: discountPct,
-      accepted,
-      margin_maintained: true,
-      message: accepted
-        ? `Price approved at $${finalPrice.toFixed(2)} (${discountPct}% discount)`
-        : `Minimum price enforced at $${finalPrice.toFixed(2)} (${discountPct}% discount from $${originalPrice})`,
-    });
   },
   {
     name: "propose_price",
@@ -87,41 +101,57 @@ const proposePriceTool = createAgentTool(
   }
 );
 
+/**
+ * Add product to cart with negotiated price
+ *
+ * @param input - Tool input with product_id and negotiated_price
+ * @returns JSON with cart item and success status
+ */
 const addToCartTool = createAgentTool(
   async (input: any) => {
-    const { product_id, negotiated_price } = input as {
-      product_id: string;
-      negotiated_price: number;
-    };
-    let product = (await dbFindProductById(product_id)) || (await dbFindProductByQuery(product_id));
+    try {
+      const { product_id, negotiated_price } = input as {
+        product_id: string;
+        negotiated_price: number;
+      };
+      let product =
+        (await dbFindProductById(product_id)) ||
+        (await dbFindProductByQuery(product_id));
 
-    if (!product) {
-      return JSON.stringify({ error: "Product not found" });
+      if (!product) {
+        return JSON.stringify({ error: "Product not found" });
+      }
+
+      const baseCost = Number(product.base_cost);
+      const minimumPrice = parseFloat((baseCost * 1.15).toFixed(2));
+
+      // Clamp to floor
+      const finalPrice = parseFloat(
+        Math.max(negotiated_price, minimumPrice).toFixed(2)
+      );
+
+      const cartItem: CartItem = {
+        productId: product.id,
+        name: product.name,
+        originalPrice: Number(product.price),
+        negotiatedPrice: finalPrice,
+        baseCost,
+        quantity: 1,
+        imageUrl: product.imageUrl ?? undefined,
+      };
+
+      return JSON.stringify({
+        success: true,
+        cart_item: cartItem,
+        message: `Added ${product.name} to cart at $${finalPrice.toFixed(2)}`,
+      });
+    } catch (error) {
+      console.error("[AddToCartTool] Error:", error);
+      return JSON.stringify({
+        error: "Failed to add item to cart",
+        details: String(error),
+      });
     }
-
-    const baseCost = Number(product.base_cost);
-    const minimumPrice = parseFloat((baseCost * 1.15).toFixed(2));
-
-    // Clamp to floor
-    const finalPrice = parseFloat(
-      Math.max(negotiated_price, minimumPrice).toFixed(2)
-    );
-
-    const cartItem: CartItem = {
-      productId: product.id,
-      name: product.name,
-      originalPrice: Number(product.price),
-      negotiatedPrice: finalPrice,
-      baseCost,
-      quantity: 1,
-      imageUrl: product.imageUrl ?? undefined,
-    };
-
-    return JSON.stringify({
-      success: true,
-      cart_item: cartItem,
-      message: `Added ${product.name} to cart at $${finalPrice.toFixed(2)}`,
-    });
   },
   {
     name: "add_to_cart",
@@ -155,61 +185,65 @@ IMPORTANT: Always call propose_price FIRST, then decide your response based on t
 
 /**
  * Negotiation Agent — handles price negotiation with strict margin enforcement.
+ *
+ * @param state - Current agent state
+ * @returns Updated state with negotiated cart items and response
  */
 export async function negotiationAgentNode(
   state: AgentState
 ): Promise<Partial<AgentState>> {
-  const messages = state.messages;
-  const currentCart = state.cart;
-
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find((message) => message._getType() === "human");
-  const lastUserText = lastUserMessage && typeof lastUserMessage.content === "string"
-    ? lastUserMessage.content
-    : "";
-  const acceptedOffer = /\b(?:accept|accepted|proceed|take it|yes)\b/i.test(lastUserText);
-  const acceptedProductId = lastUserText.match(/product\s*id:\s*([\w-]+)/i)?.[1];
-  const acceptedPrice = lastUserText.match(/\$\s?(\d+(?:\.\d+)?)/)?.[1];
-
-  if (acceptedOffer && acceptedProductId && acceptedPrice) {
-    const cartResult = JSON.parse(
-      await addToCartTool.invoke({
-        product_id: acceptedProductId,
-        negotiated_price: Number(acceptedPrice),
-      })
-    );
-    if (cartResult.success && cartResult.cart_item) {
-      const acceptedItem = cartResult.cart_item as CartItem;
-      const updatedCart = [...currentCart];
-      const existingIndex = updatedCart.findIndex(
-        (item) => item.productId === acceptedItem.productId
-      );
-      if (existingIndex >= 0) updatedCart[existingIndex] = acceptedItem;
-      else updatedCart.push(acceptedItem);
-
-      const text = `Perfect. I've added **${acceptedItem.name}** to your cart at **$${acceptedItem.negotiatedPrice.toFixed(2)}**.`;
-      return {
-        messages: [new AIMessage(text)],
-        cart: updatedCart,
-        agentResponse: {
-          text,
-          type: "cart_update",
-          cartItem: acceptedItem,
-        },
-        agentMode: "end",
-      };
-    }
-  }
-
-  const llmWithTools = llm.bindTools([proposePriceTool, addToCartTool]);
-
   try {
+    const messages = state.messages;
+    const currentCart = state.cart;
+
+    const lastUserMessage = [...messages]
+      .reverse()
+      .find((message) => message._getType() === "human");
+    const lastUserText =
+      lastUserMessage && typeof lastUserMessage.content === "string"
+        ? lastUserMessage.content
+        : "";
+    const acceptedOffer = /\b(?:accept|accepted|proceed|take it|yes)\b/i.test(
+      lastUserText
+    );
+    const acceptedProductId = lastUserText.match(/product\s*id:\s*([\w-]+)/i)?
+      .[1];
+    const acceptedPrice = lastUserText.match(/\$\s?(\d+(?:\.\d+)?)/)?.[1];
+
+    if (acceptedOffer && acceptedProductId && acceptedPrice) {
+      const cartResult = JSON.parse(
+        await addToCartTool.invoke({
+          product_id: acceptedProductId,
+          negotiated_price: Number(acceptedPrice),
+        })
+      );
+      if (cartResult.success && cartResult.cart_item) {
+        const acceptedItem = cartResult.cart_item as CartItem;
+        const updatedCart = [...currentCart];
+        const existingIndex = updatedCart.findIndex(
+          (item) => item.productId === acceptedItem.productId
+        );
+        if (existingIndex >= 0) updatedCart[existingIndex] = acceptedItem;
+        else updatedCart.push(acceptedItem);
+
+        const text = `Perfect. I've added **${acceptedItem.name}** to your cart at **$${acceptedItem.negotiatedPrice.toFixed(2)}**.`;
+        return {
+          messages: [new AIMessage(text)],
+          cart: updatedCart,
+          agentResponse: {
+            text,
+            type: "cart_update",
+            cartItem: acceptedItem,
+          },
+          agentMode: "end",
+        };
+      }
+    }
+
+    const llmWithTools = llm.bindTools([proposePriceTool, addToCartTool]);
+
     // Run agentic loop — LLM calls tools until it's done
-    let currentMessages = [
-      new SystemMessage(NEGOTIATION_SYSTEM_PROMPT),
-      ...messages,
-    ];
+    let currentMessages = [new SystemMessage(NEGOTIATION_SYSTEM_PROMPT), ...messages];
 
     let finalText = "";
     let newCartItem: CartItem | null = null;
@@ -242,11 +276,10 @@ export async function negotiationAgentNode(
         let toolResult: string;
 
         if (toolCall.name === "propose_price") {
-          toolResult = await proposePriceTool.invoke(toolCall.args as Parameters<typeof proposePriceTool.invoke>[0]);
+          toolResult = await proposePriceTool.invoke(
+            toolCall.args as Parameters<typeof proposePriceTool.invoke>[0]
+          );
 
-          // The price proposal is the transaction boundary. Once the server
-          // accepts it, add the same clamped price to the cart immediately;
-          // the LLM should not be able to leave a successful negotiation half-finished.
           try {
             const proposal = JSON.parse(toolResult) as {
               accepted?: boolean;
@@ -280,13 +313,14 @@ export async function negotiationAgentNode(
                 };
               }
             }
-          } catch {
-            /* Keep the proposal response if cart persistence fails. */
+          } catch (error) {
+            console.warn("[Negotiation] Parse error:", error);
           }
         } else if (toolCall.name === "add_to_cart") {
-          toolResult = await addToCartTool.invoke(toolCall.args as Parameters<typeof addToCartTool.invoke>[0]);
+          toolResult = await addToCartTool.invoke(
+            toolCall.args as Parameters<typeof addToCartTool.invoke>[0]
+          );
 
-          // Parse cart item from result
           try {
             const parsed = JSON.parse(toolResult) as {
               success?: boolean;
@@ -295,8 +329,8 @@ export async function negotiationAgentNode(
             if (parsed.success && parsed.cart_item) {
               newCartItem = parsed.cart_item;
             }
-          } catch {
-            /* ignore parse errors */
+          } catch (error) {
+            console.warn("[Negotiation] Cart parse error:", error);
           }
         } else {
           toolResult = JSON.stringify({ error: "Unknown tool" });
@@ -351,79 +385,11 @@ export async function negotiationAgentNode(
       agentMode: "end",
     };
   } catch (error) {
-    console.warn("[Negotiation] LLM unavailable, using deterministic negotiation:", error);
-    const lastUserMsg = [...messages].reverse().find((m) => m._getType() === "human");
-    const userText = lastUserMsg ? (typeof lastUserMsg.content === "string" ? lastUserMsg.content : JSON.stringify(lastUserMsg.content)) : "";
-
-    const matchedProducts = await dbSearchProducts(userText, 1);
-    const product = matchedProducts[0];
-
-    if (!product) {
-      const fallbackText = "I'm ready to help you negotiate! Which product would you like a special offer on?";
-      return {
-        messages: [new AIMessage(fallbackText)],
-        agentResponse: { text: fallbackText, type: "message" },
-        agentMode: "end",
-      };
-    }
-
-    const priceMatch = userText.match(/\$?(\d+(\.\d+)?)/);
-    const percentMatch = userText.match(/(\d+)%/);
-
-    let proposedPrice = product.price * 0.85;
-    if (priceMatch && parseFloat(priceMatch[1]) > 0 && parseFloat(priceMatch[1]) < product.price) {
-      proposedPrice = parseFloat(priceMatch[1]);
-    } else if (percentMatch) {
-      const pct = parseFloat(percentMatch[1]);
-      proposedPrice = product.price * (1 - pct / 100);
-    }
-
-    const toolResStr = await proposePriceTool.invoke({
-      product_id: product.id,
-      proposed_price: proposedPrice,
-    });
-    const toolRes = JSON.parse(toolResStr);
-
-    let finalText = "";
-    let cartUpdate: CartItem | undefined;
-    let counterOffer: AgentResponse["counterOffer"];
-    let updatedCart = [...currentCart];
-
-    if (toolRes.accepted) {
-      finalText = `Great news! I can approve your price for **${product.name}** at **$${toolRes.final_price.toFixed(2)}** (${toolRes.discount_percentage}% off!). I've added it to your cart.`;
-
-      const cartResStr = await addToCartTool.invoke({
-        product_id: product.id,
-        negotiated_price: toolRes.final_price,
-      });
-      const cartRes = JSON.parse(cartResStr);
-      if (cartRes.success && cartRes.cart_item) {
-        const negotiatedItem = cartRes.cart_item as CartItem;
-        cartUpdate = negotiatedItem;
-        const existingIdx = updatedCart.findIndex((i) => i.productId === product.id);
-        if (existingIdx >= 0) {
-          updatedCart[existingIdx] = negotiatedItem;
-        } else {
-          updatedCart.push(negotiatedItem);
-        }
-      }
-    } else {
-      counterOffer = {
-        productId: product.id,
-        name: product.name,
-        price: Number(toolRes.final_price),
-      };
-      finalText = `I can't go as low as your offer, but the absolute minimum price I can offer on **${product.name}** is **$${toolRes.final_price.toFixed(2)}** (${toolRes.discount_percentage}% off listed price of $${product.price}). Shall we proceed with this offer?`;
-    }
-
+    console.error("[Negotiation Agent] Unexpected error:", error);
     return {
-      messages: [new AIMessage(finalText)],
-      cart: updatedCart,
       agentResponse: {
-        text: finalText,
-        type: cartUpdate ? "cart_update" : "message",
-        cartItem: cartUpdate,
-        counterOffer,
+        text: "I encountered an issue processing your negotiation. Please try again.",
+        type: "message",
       },
       agentMode: "end",
     };
