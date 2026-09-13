@@ -1,0 +1,38 @@
+{
+  "name": "luminashop-monorepo",
+  "version": "1.0.0",
+  "description": "AI-Powered Multi-Agent E-Commerce Platform with LangGraph and pgvector",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w backend\" \"npm run dev -w frontend\"",
+    "build": "npm run build -w backend && npm run build -w frontend",
+    "start": "npm start -w backend",
+    "type-check": "npm run build -w backend && npm run build -w frontend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/itzAnshDahiya/LuminaShop.git"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "ecommerce",
+    "langgraph",
+    "pgvector",
+    "ollama",
+    "llm"
+  ],
+  "author": "Ansh Dahiya",
+  "license": "MIT"
+}

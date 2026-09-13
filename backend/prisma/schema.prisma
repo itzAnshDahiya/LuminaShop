@@ -1,5 +1,6 @@
-// This is your Prisma schema file for LuminaShop
-// Learn more about it in the docs: https://pris.ly/d/prisma-schema
+// LuminaShop Prisma Schema
+// Database: PostgreSQL with pgvector extension
+// Docs: https://pris.ly/d/prisma-schema
 
 generator client {
   provider        = "prisma-client-js"
@@ -12,30 +13,59 @@ datasource db {
   extensions = [pgvector(map: "vector")]
 }
 
+/// Product model represents an item in the LuminaShop catalog.
+/// Each product includes:
+/// - Semantic embeddings for similarity search via pgvector
+/// - Base cost for negotiation floor calculation (base_cost * 1.15)
+/// - Inventory tracking with stock quantity
 model Product {
+  /// Unique product identifier (CUID)
   id          String                       @id @default(cuid())
+  /// Product name (e.g., "Sony WH-1000XM5")
   name        String
+  /// Detailed product description
   description String
-  price       Float                        // Retail / listed price
-  base_cost   Float                        // Internal cost; negotiation floor = base_cost * 1.15
+  /// Listed/retail price shown to customers
+  price       Float
+  /// Internal cost - negotiation floor is always >= base_cost * 1.15
+  base_cost   Float
+  /// Product category (e.g., "Electronics", "Headphones")
   category    String
+  /// Product image URL (optional)
   imageUrl    String?
+  /// Current stock quantity (default: 100)
   stock       Int                          @default(100)
-  embedding   Unsupported("vector(768)")?  // nomic-embed-text dim = 768
+  /// 768-dimensional vector embedding (nomic-embed-text)
+  /// Used for semantic similarity search across products
+  embedding   Unsupported("vector(768)")?
+  /// Timestamp when product was created
   createdAt   DateTime                     @default(now())
+  /// Timestamp when product was last updated
   updatedAt   DateTime                     @updatedAt
 
   @@map("products")
 }
 
+/// Session model represents a user conversation session.
+/// Maintains chat history, shopping cart, and checkout state.
 model Session {
+  /// Unique session identifier (CUID)
   id           String   @id @default(cuid())
-  messages     Json     @default("[]")   // ChatMessage[]
-  cart         Json     @default("[]")   // CartItem[]
+  /// Array of ChatMessage objects (JSON)
+  /// Format: { role: "user" | "assistant", content: string, timestamp: ISO8601 }
+  messages     Json     @default("[]")
+  /// Array of CartItem objects (JSON)
+  /// Format: { id: string, name: string, price: number, quantity: number }
+  cart         Json     @default("[]")
+  /// Flag indicating if checkout has been completed
   checkedOut   Boolean  @default(false)
+  /// Mock Stripe checkout URL (generated on successful checkout)
   stripeUrl    String?
+  /// Total checkout amount (calculated at checkout time)
   totalAmount  Float?
+  /// Timestamp when session was created
   createdAt    DateTime @default(now())
+  /// Timestamp when session was last updated
   updatedAt    DateTime @updatedAt
 
   @@map("sessions")

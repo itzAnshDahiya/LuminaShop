@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import chatRouter from "./routes/chat";
 import sessionRouter from "./routes/session";
+import rateLimit from "express-rate-limit";
 
 dotenv.config();
 
@@ -10,8 +11,16 @@ const app = express();
 const PORT = parseInt(process.env.PORT || "3001", 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 
-// ── Middleware ─────────────────────────────────────────────────────────────
+// ── Rate Limiting ──────────────────────────────────────────────────────────
+const apiLimiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "60000", 10),
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || "30", 10),
+  message: "Too many requests from this IP, please try again later.",
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
+// ── Middleware ──────────────────────────────────────────────────────────────
 app.use(
   cors({
     origin: [FRONTEND_URL, "http://localhost:5173", "http://localhost:3000"],
@@ -30,8 +39,12 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ── Routes ─────────────────────────────────────────────────────────────────
+// ── Health & Routes ─────────────────────────────────────────────────────────
 
+/**
+ * Health check payload
+ * @returns {Object} Health status with service info
+ */
 const healthPayload = () => ({
   status: "ok",
   service: "LuminaShop Backend",
@@ -42,12 +55,26 @@ const healthPayload = () => ({
 });
 
 app.get("/health", (_req, res) => {
-  res.json(healthPayload());
+  try {
+    res.json(healthPayload());
+  } catch (error) {
+    console.error("[Health] Error:", error);
+    res.status(500).json({ error: "Health check failed" });
+  }
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json(healthPayload());
+  try {
+    res.json(healthPayload());
+  } catch (error) {
+    console.error("[Health] Error:", error);
+    res.status(500).json({ error: "Health check failed" });
+  }
 });
+
+// Apply rate limiting to API routes
+app.use("/api/chat", apiLimiter);
+app.use("/api/session", apiLimiter);
 
 app.use("/api/chat", chatRouter);
 app.use("/api/session", sessionRouter);
@@ -70,11 +97,12 @@ app.use(
       error: "Internal server error",
       message:
         process.env.NODE_ENV === "development" ? err.message : undefined,
+      timestamp: new Date().toISOString(),
     });
   }
 );
 
-// ── Start ──────────────────────────────────────────────────────────────────
+// ── Start ────────────────────────────────────────────────────────────────────
 
 const server = app.listen(PORT, () => {
   console.log(`
@@ -86,6 +114,7 @@ const server = app.listen(PORT, () => {
 ║  Frontend : ${FRONTEND_URL}    ║
 ║  Ollama   : ${process.env.OLLAMA_BASE_URL || "http://localhost:11434"}   ║
 ║  Env      : ${process.env.NODE_ENV || "development"}            ║
+║  Rate Limit: ${process.env.RATE_LIMIT_MAX_REQUESTS || "30"} req/min         ║
 ╚══════════════════════════════════════════╝
   `);
 });
@@ -93,6 +122,14 @@ const server = app.listen(PORT, () => {
 server.on("error", (error: Error & { code?: string }) => {
   console.error("[Server] Failed to start:", error);
   process.exit(1);
+});
+
+process.on("SIGTERM", () => {
+  console.log("[Server] SIGTERM received, shutting down gracefully");
+  server.close(() => {
+    console.log("[Server] Closed");
+    process.exit(0);
+  });
 });
 
 export default app;
